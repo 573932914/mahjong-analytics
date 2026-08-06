@@ -94,6 +94,7 @@ fn build_snapshot_df(
         ca
     };
     let seq = i32_col!("seq", seq);
+    let round = i32_col!("round", round);
     let honba = i32_col!("honba", honba);
     let oya = i8_col!("oya", oya);
     let turns = list_i32_fixed_4("turns", snapshots, |s| &s.turns);
@@ -172,6 +173,7 @@ fn build_snapshot_df(
     let mut cols: Vec<Column> = vec![
         game_id.into_series().into(),
         seq.into_series().into(),
+        round.into_series().into(),
         honba.into_series().into(),
         oya.into_series().into(),
         turns.into(),

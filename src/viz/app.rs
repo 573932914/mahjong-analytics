@@ -102,6 +102,7 @@ impl VizApp {
         let seq: Vec<i32> = read_i32_col(&df, "seq")?;
         let honba: Vec<i32> = read_i32_col(&df, "honba")?;
         let oya: Vec<i8> = read_i8_col(&df, "oya")?;
+        let round: Vec<i32> = read_i32_col_or(&df, "round", 0);
         let actor: Vec<i8> = read_i8_col(&df, "actor")?;
         let action_type: Vec<String> =
             read_str_col(&df, "action_type")?;
@@ -193,6 +194,7 @@ impl VizApp {
                     .cloned()
                     .unwrap_or_default(),
                 seq: seq[i],
+                round: round[i],
                 honba: honba[i],
                 oya: oya[i],
                 turns: turns[i],
@@ -515,6 +517,14 @@ fn read_i32_col(
         .i32()?
         .into_no_null_iter()
         .collect())
+}
+
+/// Read i32 column, fall back to `default_val` if column is missing (backward compat).
+fn read_i32_col_or(df: &DataFrame, name: &str, default_val: i32) -> Vec<i32> {
+    match df.column(name) {
+        Ok(col) => col.i32().map(|s| s.into_no_null_iter().collect()).unwrap_or_else(|_| vec![default_val; df.height()]),
+        Err(_) => vec![default_val; df.height()],
+    }
 }
 
 fn read_bool_col(df: &DataFrame, name: &str) -> anyhow::Result<Vec<bool>> {

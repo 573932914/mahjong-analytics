@@ -48,6 +48,9 @@ pub struct Snapshot {
     /// 全局快照序号，跨局单调递增（0, 1, 2, ...）。仅作联合主键，
     /// 分析时请用 `turns[actor]` 表示操作者巡目。
     pub seq: i32,
+    /// 局编号（天凤 seed[0]）：0=東一, 1=東二, ..., 4=南一, ...。
+    /// 場風 = round / 4（0=東, 1=南, 2=西）。
+    pub round: i32,
     /// 本場数（连庄次数）。
     pub honba: i32,
     /// 当前庄家（0-3）。
@@ -161,6 +164,7 @@ pub(crate) struct GameState {
     pub num_players: i32,
 
     // ── 局级（每局重置）─────────────────────────
+    pub round: i32,
     pub honba: i32,
     pub riichi_sticks: i32,
     pub scores: [i32; 4],
@@ -219,6 +223,7 @@ impl Default for GameState {
             rates: [1500.0; 4],
             sexes: Default::default(),
             num_players: 4,
+            round: 0,
             honba: 0,
             riichi_sticks: 0,
             scores: [250; 4],

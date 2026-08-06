@@ -275,6 +275,7 @@ fn reset_round(gs: &mut GameState, a: &HashMap<String, String>) {
     if let Some(sd) = a.get("seed") {
         let p: Vec<&str> = sd.split(',').collect();
         if p.len() >= 6 {
+            gs.round = p[0].parse().unwrap_or(0);
             gs.honba = p[1].parse().unwrap_or(0);
             gs.riichi_sticks = p[2].parse().unwrap_or(0);
             gs.dora_indicators.push(p[5].parse().unwrap_or(0));
@@ -374,7 +375,7 @@ fn emit_agari_snap(gs: &mut GameState, a: &HashMap<String, String>) {
 fn capture_snapshot(gs: &GameState, actor: i8, action_type: &str, drawn_tile: i32, called_tile: i32, discard_tile: i32) -> Snapshot {
     let hand_before: [Vec<i32>; 4] = [gs.hands[0].clone(), gs.hands[1].clone(), gs.hands[2].clone(), gs.hands[3].clone()];
     Snapshot {
-        game_id: gs.game_id.clone(), seq: gs.seq, honba: gs.honba, oya: gs.oya,
+        game_id: gs.game_id.clone(), seq: gs.seq, round: gs.round, honba: gs.honba, oya: gs.oya,
         turns: gs.turns, actor, hand_before,
         river_p0: gs.rivers[0].clone(), river_p1: gs.rivers[1].clone(),
         river_p2: gs.rivers[2].clone(), river_p3: gs.rivers[3].clone(),
