@@ -162,33 +162,24 @@ pub fn convert_batch_parallel(
         elapsed, total as f64 / elapsed
     );
 
+    // 先删除旧合并文件，避免 glob 重复计入
+    let merged_path = output_dir.join("snapshots_all.parquet");
+    if merged_path.exists() {
+        std::fs::remove_file(&merged_path)?;
+        eprintln!("已删除旧合并文件");
+    }
+
     // 合并为单个文件 (流式, 零内存)
     eprintln!("合并为单个 parquet (流式)...");
-    let merged_path = output_dir.join("snapshots_all.parquet");
     let glob = format!("{}/*.parquet", output_dir.display());
     let lf = LazyFrame::scan_parquet(&glob, Default::default())?;
-    lf.sink_parquet(
+    let _ = lf.sink_parquet(
         SinkTarget::Path(std::sync::Arc::new(merged_path.clone())),
         ParquetWriteOptions::default(),
         None,
         SinkOptions::default(),
     )?;
     eprintln!("合并完成 → {}", merged_path.display());
-
-    // 只在合并文件存在且非空时删除临时文件
-    if merged_path.exists() && merged_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        for entry in std::fs::read_dir(output_dir)? {
-            let path = entry?.path();
-            if path.extension().map_or(false, |e| e == "parquet")
-                && path != merged_path
-            {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-        eprintln!("临时文件已清理");
-    } else {
-        eprintln!("警告: 合并文件异常，保留所有临时文件");
-    }
 
     Ok(())
 }
