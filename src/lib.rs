@@ -162,24 +162,33 @@ pub fn convert_batch_parallel(
         elapsed, total as f64 / elapsed
     );
 
-    // 先删除旧合并文件，避免 glob 重复计入
+    // 先删除旧合并文件
     let merged_path = output_dir.join("snapshots_all.parquet");
     if merged_path.exists() {
         std::fs::remove_file(&merged_path)?;
         eprintln!("已删除旧合并文件");
     }
 
-    // 合并为单个文件 (流式, 零内存)
+    // 合并为单个文件 (使用 glob — 大量文件时建议用 Python 合并)
     eprintln!("合并为单个 parquet (流式)...");
     let glob = format!("{}/*.parquet", output_dir.display());
-    let lf = LazyFrame::scan_parquet(&glob, Default::default())?;
-    let _ = lf.sink_parquet(
-        SinkTarget::Path(std::sync::Arc::new(merged_path.clone())),
-        ParquetWriteOptions::default(),
-        None,
-        SinkOptions::default(),
-    )?;
-    eprintln!("合并完成 → {}", merged_path.display());
+    match LazyFrame::scan_parquet(&glob, Default::default()) {
+        Ok(lf) => {
+            let _ = lf.sink_parquet(
+                SinkTarget::Path(std::sync::Arc::new(merged_path.clone())),
+                ParquetWriteOptions::default(),
+                None,
+                SinkOptions::default(),
+            )?;
+            eprintln!("合并完成 → {}", merged_path.display());
+        }
+        Err(e) => {
+            eprintln!("合并失败: {e}");
+            eprintln!("请用 Python 手动合并:");
+            eprintln!("  uv run python -c \"import polars as pl; pl.scan_parquet('{}/*.parquet').sink_parquet('{}')\"",
+                output_dir.display(), merged_path.display());
+        }
+    }
 
     Ok(())
 }
