@@ -4,7 +4,6 @@ use std::f32::consts::PI;
 use egui::{Color32, CornerRadius, Pos2, Stroke, Ui, Vec2};
 use egui::epaint::Mesh;
 
-use crate::mahjong;
 use crate::snapshot::Snapshot;
 use crate::viz::tiles::{self, TileAssets};
 
@@ -84,16 +83,19 @@ fn draw_player(
 fn draw_hand(ui: &mut Ui, hand: &[i32], drawn: i32, is_actor: bool,
     ox: f32, oy: f32, rot_cx: f32, rot_cy: f32, angle: f32, assets: Option<&TileAssets>,
 ) {
-    let (sorted, dr) = if is_actor && drawn >= 0 {
-        mahjong::tiles::sort_hand_with_draw(hand, drawn)
-    } else { (mahjong::tiles::sort_hand(hand), -1) };
-    let mut display = sorted.clone();
-    if dr >= 0 && !display.contains(&dr) { display.push(dr); }
     let mut lx = 0.0f32;
-    for (i, &id) in display.iter().enumerate() {
-        if dr >= 0 && id == dr && i == display.len() - 1 { lx += 12.0; }
-        draw_tile(ui, Pos2::new(ox+lx, oy), id, TILE_W, TILE_H, rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, false);
+    // 抓牌前的手牌（排除摸到的牌）
+    for &id in hand.iter() {
+        if is_actor && drawn >= 0 && id == drawn { continue; }
+        draw_tile(ui, Pos2::new(ox + lx, oy), id, TILE_W, TILE_H,
+            rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, false);
         lx += TILE_W;
+    }
+    // 摸到的牌显示在右侧
+    if is_actor && drawn >= 0 {
+        lx += 12.0;
+        draw_tile(ui, Pos2::new(ox + lx, oy), drawn, TILE_W, TILE_H,
+            rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, false);
     }
 }
 
@@ -150,60 +152,171 @@ fn draw_melds(
 ) {
     if melds.is_empty() { return; }
     let meld_start_y = oy - TILE_H - 8.0;
-    let mut mx = ox - TILE_W; // 从手牌左侧开始, 稍向左偏
+    let mut mx = ox - TILE_W;
+    let ext = (TILE_H - TILE_W) / 2.0;
 
-    for meld in melds.iter() {
-        let n = meld.tiles.len();
+    let mut i = 0;
+    while i < melds.len() {
+        let meld = &melds[i];
 
-        // 暗杠: [牌背][牌][牌][牌背]
-        if meld.meld_type == "ankan" && n == 4 {
-            let layout = [-1, meld.tiles[0], meld.tiles[1], -1];
-            for (j, &t) in layout.iter().enumerate() {
-                let tx = mx + j as f32 * (TILE_W + GAP);
-                let is_b = t == -1;
-                draw_tile(ui, Pos2::new(tx, meld_start_y), if is_b { 0 } else { t },
-                    TILE_W, TILE_H, rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, is_b);
+        match meld.meld_type.as_str() {
+            "ankan" if meld.tiles.len() == 4 => {
+                let layout = [-1, meld.tiles[0], meld.tiles[1], -1];
+                for (j, &t) in layout.iter().enumerate() {
+                    let tx = mx + j as f32 * (TILE_W + GAP);
+                    let is_b = t == -1;
+                    draw_tile(ui, Pos2::new(tx, meld_start_y), if is_b { 0 } else { t },
+                        TILE_W, TILE_H, rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, is_b);
+                }
+                mx += 4.0 * TILE_W + 16.;
             }
-            mx += 4.0 * TILE_W + 16.;
-            continue;
+
+            "daiminkan" => {
+                draw_daiminkan(ui, meld, player_idx, mx, meld_start_y, ext,
+                    rot_cx, rot_cy, angle, assets);
+                mx += 4.0 * TILE_W + 16.;
+            }
+
+            "chi" | "pon" => {
+                // 检查下一个副露是否是匹配的 kakan
+                let kakan_tile = if i + 1 < melds.len()
+                    && melds[i + 1].meld_type == "kakan"
+                    && melds[i + 1].tiles[0] / 4 == meld.tiles[0] / 4
+                {
+                    i += 1; // 消费 kakan
+                    melds[i].called_tile // 加杠的那张牌
+                } else {
+                    -1
+                };
+                draw_pon_chi(ui, meld, player_idx, mx, meld_start_y, ext,
+                    rot_cx, rot_cy, angle, kakan_tile, assets);
+                mx += 3.0 * TILE_W + 16.;
+            }
+
+            "kakan" => {
+                // 未配对的 kakan（不应常见）：画全部 4 张
+                for (j, &t) in meld.tiles.iter().enumerate() {
+                    let tx = mx + j as f32 * (TILE_W + GAP);
+                    draw_tile(ui, Pos2::new(tx, meld_start_y), t, TILE_W, TILE_H,
+                        rot_cx, rot_cy, angle, 0.0, assets, Color32::WHITE, false, false);
+                }
+                mx += 4.0 * TILE_W + 16.;
+            }
+
+            _ => {
+                mx += meld.tiles.len() as f32 * TILE_W + 16.;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// 绘制 chi / pon（3 张副露），可选叠放 kakan 牌。
+fn draw_pon_chi(
+    ui: &mut Ui, meld: &crate::snapshot::MeldEntry, player_idx: usize,
+    mx: f32, my: f32, ext: f32,
+    rot_cx: f32, rot_cy: f32, angle: f32,
+    kakan_tile: i32, assets: Option<&TileAssets>,
+) {
+    let has_call = meld.from_player >= 0 && meld.called_tile > 0;
+    let display_pos: usize = if has_call {
+        match (meld.from_player + 4 - player_idx as i8) % 4 {
+            1 => 2, 2 => 1, 3 => 0, _ => 1,
+        }
+    } else { 1 };
+
+    let others: Vec<i32> = meld.tiles.iter().copied()
+        .filter(|&t| !has_call || t != meld.called_tile).collect();
+
+    let mut display: [i32; 3] = [-1; 3];
+    let mut oi = 0;
+    for p in 0..3 {
+        if p == display_pos && has_call {
+            display[p] = meld.called_tile;
+        } else if oi < others.len() {
+            display[p] = others[oi];
+            oi += 1;
+        }
+    }
+
+    let mut called_tx = mx;
+    for (j, &t) in display.iter().enumerate() {
+        if t < 0 { continue; }
+        let is_called = has_call && t == meld.called_tile;
+        let mut tx = mx + j as f32 * (TILE_W + GAP);
+        if has_call {
+            if is_called { tx += ext; }
+            else if j < display_pos { tx -= ext; }
+            else { tx += ext; }
+        }
+        if is_called { called_tx = tx; }
+        let local_rot = if is_called { -PI / 2.0 } else { 0.0 };
+        draw_tile(ui, Pos2::new(tx, my), t, TILE_W, TILE_H,
+            rot_cx, rot_cy, angle, local_rot, assets, Color32::WHITE, false, false);
+    }
+
+    // kakan 叠放：在旋转牌上偏移绘制
+    if kakan_tile >= 0 {
+        draw_tile(ui, Pos2::new(called_tx + 4.0, my - 3.0), kakan_tile, TILE_W, TILE_H,
+            rot_cx, rot_cy, angle, -PI / 2.0, assets, Color32::WHITE, false, false);
+    }
+}
+
+/// 绘制 daiminkan：4 张牌，旋转牌在中间三张内，额外牌在远端。
+fn draw_daiminkan(
+    ui: &mut Ui, meld: &crate::snapshot::MeldEntry, player_idx: usize,
+    mx: f32, my: f32, ext: f32,
+    rot_cx: f32, rot_cy: f32, angle: f32,
+    assets: Option<&TileAssets>,
+) {
+    let display_pos: usize = match (meld.from_player + 4 - player_idx as i8) % 4 {
+        1 => 2, 2 => 1, 3 => 0, _ => 1,
+    };
+
+    // 额外牌放远端：旋转在右(2) → 额外在左，否则额外在右
+    let extra_left = display_pos == 2;
+    let pon_start: usize = if extra_left { 1 } else { 0 };
+
+    let others: Vec<i32> = meld.tiles.iter().copied()
+        .filter(|&t| t != meld.called_tile).collect();
+
+    let mut display: [i32; 4] = [-1; 4];
+
+    // 放置 called 到 pon 三元组内的对应位置
+    display[pon_start + display_pos] = meld.called_tile;
+
+    // 放置 consumed tiles 到 pon 其余位置
+    let mut oi = 0;
+    for p in 0..3 {
+        if p == display_pos { continue; }
+        display[pon_start + p] = others[oi];
+        oi += 1;
+    }
+
+    // 额外牌放远端
+    if extra_left {
+        display[0] = others[oi];
+    } else {
+        display[3] = others[oi];
+    }
+
+    for (j, &t) in display.iter().enumerate() {
+        if t < 0 { continue; }
+        let is_called = t == meld.called_tile;
+        let mut tx = mx + j as f32 * (TILE_W + GAP);
+
+        // 仅在 pon 三元组范围内应用旋转偏移
+        let pon_j = j as isize - pon_start as isize;
+        if pon_j >= 0 && pon_j < 3 {
+            let pj = pon_j as usize;
+            if is_called { tx += ext; }
+            else if pj < display_pos { tx -= ext; }
+            else { tx += ext; }
         }
 
-        if n != 3 { mx += n as f32 * TILE_W + 16.; continue; }
-
-        let has_call = meld.from_player >= 0;
-        let display_pos: usize = if has_call {
-            match (meld.from_player + 4 - player_idx as i8) % 4 {
-                1 => 2, 2 => 1, 3 => 0, _ => 1,
-            }
-        } else { 1 };
-
-        let mut display: [i32; 3] = [-1; 3];
-        {
-            let others: Vec<i32> = meld.tiles.iter().copied()
-                .filter(|&t| !has_call || t != meld.called_tile).collect();
-            let mut oi = 0;
-            for p in 0..3 {
-                if p == display_pos && has_call { display[p] = meld.called_tile; }
-                else if oi < others.len() { display[p] = others[oi]; oi += 1; }
-            }
-        }
-
-        let ext = (TILE_H - TILE_W) / 2.0;
-        for (j, &t) in display.iter().enumerate() {
-            if t < 0 { continue; }
-            let is_called = has_call && t == meld.called_tile;
-            let mut tx = mx + j as f32 * (TILE_W + GAP);
-            if has_call {
-                if is_called { tx += ext; }
-                else if j < display_pos { tx -= ext; }
-                else { tx += ext; }
-            }
-            let local_rot = if is_called { -PI / 2.0 } else { 0.0 };
-            draw_tile(ui, Pos2::new(tx, meld_start_y), t, TILE_W, TILE_H,
-                rot_cx, rot_cy, angle, local_rot, assets, Color32::WHITE, false, false);
-        }
-
-        mx += 3.0 * TILE_W + 16.;
+        let local_rot = if is_called { -PI / 2.0 } else { 0.0 };
+        draw_tile(ui, Pos2::new(tx, my), t, TILE_W, TILE_H,
+            rot_cx, rot_cy, angle, local_rot, assets, Color32::WHITE, false, false);
     }
 }
 

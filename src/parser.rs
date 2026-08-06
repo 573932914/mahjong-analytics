@@ -35,40 +35,85 @@ fn sort_tiles(t: &mut [i32]) {
 
 // ── 副露解码 ──────────────────────────────────────────────────
 
-/// 解码天凤副露 packed integer。
+/// 解码天凤副露 packed integer（参照 tenhou0_to_mjai 编码规范）。
 /// 返回 `(meld_type, tiles, called_tile, from_player, called_pos)`
+///
+/// # 入口分派
+/// - `m & 0x04` → chi
+/// - `m & 0x18` → pon/kakan（内部用 `m & 0x08` 区分 pon/kakan）
+/// - `m & 0x20` → 三人麻将北抜き（不支持）
+/// - 否则 → kan（`m & 0x03` 区分 ankan=0 / daiminkan≠0）
 fn decode_meld(m: u32, who: i8) -> (String, Vec<i32>, i32, i8, i8) {
     if m & 0x0004 != 0 {
-        let p = ((m >> 10) & 0x3F) as i32;
-        let r = p % 3;
-        let p = p / 3;
-        let s = p / 7;
-        let n0 = p % 7;
-        let ids: Vec<i32> = (0..3).map(|i| (s * 9 + n0 + i) * 4).collect();
-        let c = ids[r as usize];
-        ("chi".into(), ids, c, ((who as i32 + 3) % 4) as i8, r as i8)
+        // ── chi ────────────────────────────────────────────
+        let from_who = (m & 0x03) as i8;
+        let pattern = (m >> 10) & 0x3F;
+        let called_idx = (pattern % 3) as i8;
+        let pattern = pattern / 3;
+        let start = pattern % 7;
+        let suit = pattern / 7;
+        let base = (suit * 9 + start) as i32;
+        // 精确 copy indexes（bits 3-8）
+        let copies = [
+            ((m >> 3) & 0x03) as i32,
+            ((m >> 5) & 0x03) as i32,
+            ((m >> 7) & 0x03) as i32,
+        ];
+        let ids: Vec<i32> = (0..3)
+            .map(|i| (base + i as i32) * 4 + copies[i])
+            .collect();
+        let called = ids[called_idx as usize];
+        let from = ((who as i32 + from_who as i32) % 4) as i8;
+        ("chi".into(), ids, called, from, called_idx)
     } else if m & 0x0018 != 0 {
-        let p = ((m >> 9) & 0x7F) as i32;
-        let r = p % 3;
-        let p = p / 3;
-        let s = p / 9;
-        let n = p % 9;
-        let tid = s * 9 + n;
-        if m & 0x0010 != 0 {
-            ("kakan".into(), (0..4).map(|i| tid * 4 + i).collect(), 0, -1, -1)
+        // ── pon / kakan ────────────────────────────────────
+        let from_who = (m & 0x03) as i8;
+        let pattern = (m >> 9) & 0x7F;
+        let called_idx = (pattern % 3) as i8;
+        let tile_kind = (pattern / 3) as i32;
+        let added_idx = ((m >> 5) & 0x03) as usize;
+        let tile_ids: Vec<i32> = (0..4).map(|i| tile_kind * 4 + i as i32).collect();
+        if m & 0x0008 != 0 {
+            // pon：排除 added_idx，called 在最前
+            let all3: Vec<i32> =
+                tile_ids.iter().enumerate()
+                    .filter(|(i, _)| *i != added_idx)
+                    .map(|(_, &t)| t)
+                    .collect();
+            // called_idx 索引的是排除 added_idx 后的 3 张集合，不是全部 4 张
+            let called = all3[called_idx as usize];
+            let consumed: Vec<i32> = all3.iter().filter(|&&t| t != called).copied().collect();
+            let mut result = vec![called];
+            result.extend(consumed);
+            let from = ((who as i32 + from_who as i32) % 4) as i8;
+            ("pon".into(), result, called, from, called_idx)
         } else {
-            let ts: Vec<i32> = (0..3).map(|i| tid * 4 + i).collect();
-            let c = ts[r as usize];
-            let f = ((who as i32 + 1 + r) % 4) as i8;
-            ("pon".into(), ts, c, f, r as i8)
+            // kakan：added_idx 是加进 pon 的那张，放在最前
+            let added = tile_ids[added_idx];
+            let mut result = vec![added];
+            for (i, &t) in tile_ids.iter().enumerate() {
+                if i != added_idx { result.push(t); }
+            }
+            ("kakan".into(), result, added, -1, -1)
         }
+    } else if m & 0x0020 != 0 {
+        panic!("three-player kita meld is not supported (m={m})")
     } else {
-        let p = ((m >> 8) & 0xFF) as i32;
-        let p = p / 4;
-        let s = p / 9;
-        let n = p % 9;
-        let tid = s * 9 + n;
-        ("ankan".into(), (0..4).map(|i| tid * 4 + i).collect(), 0, -1, -1)
+        // ── kan（ankan / daiminkan）────────────────────────
+        let from_who = (m & 0x03) as i8;
+        let pattern = (m >> 8) & 0xFF;
+        let called_idx = (pattern % 4) as i8;
+        let tile_kind = (pattern / 4) as i32;
+        let tile_ids: Vec<i32> = (0..4).map(|i| tile_kind * 4 + i as i32).collect();
+        if from_who == 0 {
+            // ankan：全部 4 张来自手牌
+            ("ankan".into(), tile_ids, -1, -1, -1)
+        } else {
+            // daiminkan：called 来自他家，其余 3 张来自手牌
+            let called = tile_ids[called_idx as usize];
+            let from = ((who as i32 + from_who as i32) % 4) as i8;
+            ("daiminkan".into(), tile_ids, called, from, called_idx)
+        }
     }
 }
 
@@ -143,41 +188,15 @@ pub fn parse_game_xml(xml: &str, game_id: &str) -> anyhow::Result<Vec<Snapshot>>
                     'n' => {
                         let who: i8 = attrs.get("who").and_then(|v| v.parse().ok()).unwrap_or(0);
                         let m: u32 = attrs.get("m").and_then(|v| v.parse().ok()).unwrap_or(0);
-                        let (tp, mut tiles, called_guess, _from_guess, called_pos) = decode_meld(m, who);
-                        // decode 的 called 只是副本 0-2；实际被牌可能是副本 3。
-                        // 从所有牌河中按全局弃牌 seq 找最近的那张作为真实被叫牌。
-                        let type_id = called_guess / 4;
-                        let mut called = called_guess;
-                        let mut from = _from_guess;
-                        let mut best_seq = -1i32;
-                        for fp in 0..4 {
-                            if fp == who as usize { continue; }
-                            for (pos, &t) in gs.rivers[fp].iter().enumerate() {
-                                if t / 4 == type_id && gs.river_seq[fp][pos] > best_seq {
-                                    best_seq = gs.river_seq[fp][pos];
-                                    called = t;
-                                    from = fp as i8;
-                                }
-                            }
-                        }
-                        // 替换所有猜測 ID 为手牌中的真实实例（避免重复取同一实例）
-                        let mut hand_copy = gs.hands[who as usize].clone();
-                        for t in &mut tiles {
-                            if *t == called_guess { *t = called; continue; }
-                            let t_type = *t / 4;
-                            if let Some(pos) = hand_copy.iter().position(|&h| h / 4 == t_type) {
-                                *t = hand_copy.remove(pos);
-                            }
-                        }
-                        let meld_type = if tp == "pon"
-                            && gs.hands[who as usize].iter().filter(|&&t| t / 4 == called / 4).count() >= 3
-                        { "daiminkan".to_string() } else { tp.clone() };
-                        remove_meld_tiles(&mut gs, who, &meld_type, &tiles, called);
-                        sort_tiles(&mut tiles);
+                        let (tp, tiles, called, from, called_pos) = decode_meld(m, who);
+                        remove_meld_tiles(&mut gs, who, &tp, &tiles, called);
+                        sort_tiles(&mut gs.hands[who as usize]);
+                        let mut sorted_tiles = tiles.clone();
+                        sort_tiles(&mut sorted_tiles);
                         let discard_n = gs.turns[who as usize];
                         gs.melds[who as usize].push(MeldEntry {
-                            meld_type: meld_type.clone(),
-                            tiles: tiles.clone(),
+                            meld_type: tp.clone(),
+                            tiles: sorted_tiles,
                             called_tile: called,
                             from_player: from,
                             discard_n,
@@ -185,22 +204,22 @@ pub fn parse_game_xml(xml: &str, game_id: &str) -> anyhow::Result<Vec<Snapshot>>
                         });
                         gs.actor = who;
                         gs.last_draw = if called > 0 { called } else { gs.last_draw };
-                        match meld_type.as_str() {
-                            "chi" | "pon" => { pending_meld = Some((meld_type, called)); }
-                            "daiminkan" | "shominkan" => {
+                        match tp.as_str() {
+                            "chi" | "pon" => { pending_meld = Some((tp, called)); }
+                            "daiminkan" => {
                                 gs.wall_remaining -= 1;
                                 gs.next_draw_from_dead_wall = true;
-                                emit_kan_snap(&mut gs, who, &meld_type, called);
+                                emit_kan_snap(&mut gs, who, "daiminkan", called);
                             }
                             "ankan" => {
                                 gs.wall_remaining -= 1;
                                 gs.next_draw_from_dead_wall = true;
-                                emit_kan_snap(&mut gs, who, "ankan", tiles[0]);
+                                emit_kan_snap(&mut gs, who, "ankan", -1);
                             }
                             "kakan" => {
                                 gs.wall_remaining -= 1;
                                 gs.next_draw_from_dead_wall = true;
-                                emit_kan_snap(&mut gs, who, "kakan", tiles[3]);
+                                emit_kan_snap(&mut gs, who, "kakan", called);
                             }
                             _ => {}
                         }
@@ -291,9 +310,9 @@ fn emit_meld_discard_snap(gs: &mut GameState, actor: i8, tile: i32, meld_type: &
 
 fn emit_kan_snap(gs: &mut GameState, actor: i8, kan_type: &str, kan_tile: i32) {
     let (drawn_tile, called_tile, discard_tile) = match kan_type {
-        "ankan" => (gs.last_draw, -1, kan_tile),
-        "kakan" => (gs.last_draw, -1, kan_tile),
-        "daiminkan" | "shominkan" => (-1, kan_tile, -1),
+        "ankan" => (gs.last_draw, -1, -1),
+        "kakan" => (gs.last_draw, kan_tile, -1),
+        "daiminkan" => (-1, kan_tile, -1),
         _ => (-1, -1, -1),
     };
     let snap = capture_snapshot(gs, actor, kan_type, drawn_tile, called_tile, discard_tile);
@@ -377,11 +396,18 @@ fn capture_snapshot(gs: &GameState, actor: i8, action_type: &str, drawn_tile: i3
 fn remove_meld_tiles(gs: &mut GameState, who: i8, mt: &str, tiles: &[i32], called: i32) {
     let h = &mut gs.hands[who as usize];
     match mt {
-        "chi" | "pon" | "daiminkan" | "shominkan" => {
+        "chi" | "pon" | "daiminkan" => {
+            // called 来自他家，不剔除；其余 consumed 从手牌移除
             for &t in tiles { if t != called { if let Some(p) = h.iter().position(|&x| x == t) { h.remove(p); } } }
         }
-        "kakan" => { if let Some(p) = h.iter().position(|&x| x == tiles[0]) { h.remove(p); } }
-        _ => { for &t in tiles { if let Some(p) = h.iter().position(|&x| x == t) { h.remove(p); } } }
+        "kakan" => {
+            // called = 加进 pon 的那张牌，从手牌移除
+            if let Some(p) = h.iter().position(|&x| x == called) { h.remove(p); }
+        }
+        _ => {
+            // ankan: 全部 4 张来自手牌
+            for &t in tiles { if let Some(p) = h.iter().position(|&x| x == t) { h.remove(p); } }
+        }
     }
 }
 
