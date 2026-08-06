@@ -1,0 +1,28 @@
+[package]
+name = "mahjong-analytics"
+version = "0.1.0"
+edition = "2021"
+description = "Convert mahjong mjlog XML into polars DataFrames for statistical analysis"
+authors = ["Apricot S."]
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+polars = { version = "0.49", features = ["lazy", "parquet", "strings", "dtype-struct", "rows"] }
+quick-xml = "0.37"
+rusqlite = { version = "0.34", features = ["bundled"] }
+flate2 = "1"
+eframe = "0.31"
+egui = "0.31"
+rfd = "0.15"
+image = "0.25"
+rayon = "1"
+
+[[bin]]
+name = "mahjong-analytics"
+path = "src/main.rs"
+
+[[bin]]
+name = "mahjong-viz"
+path = "src/bin/viz.rs"

@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug mahjong-viz (with example)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/mahjong-viz.exe",
+            "args": [
+                "${workspaceFolder}/examples/2021010100gm-00a9-0000-01e8ec31/snapshots.parquet"
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build viz debug",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug mahjong-viz (no args)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/mahjong-viz.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build viz debug",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Debug mahjong-analytics convert",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/mahjong-analytics.exe",
+            "args": [
+                "convert",
+                "${workspaceFolder}/examples/2021010100gm-00a9-0000-01e8ec31.xml",
+                "-o",
+                "${workspaceFolder}/test_debug"
+            ],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build convert debug",
+            "console": "integratedTerminal"
+        }
+    ]
+}
