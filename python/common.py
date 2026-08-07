@@ -16,6 +16,7 @@ import polars as pl
 
 DATA_DIR = "E:/tables"
 MERGED = f"{DATA_DIR}/snapshots_all.parquet"
+OUTPUT_DIR = Path(__file__).parent / "output"
 
 # ── 場風 / 自風 ──────────────────────────────────────────────────
 
@@ -247,7 +248,8 @@ class AnalysisResult:
         self.formats = formats or ["txt", "csv"]
         self.timers: dict[str, Timer] = {}
         self.metrics: dict[str, int | float | str] = {}
-        self._script_dir = Path(sys.argv[0]).parent if "__file__" not in dir(sys.modules["__main__"]) else Path("python")
+        self._out_dir = OUTPUT_DIR
+        self._out_dir.mkdir(parents=True, exist_ok=True)
         self._start = time.perf_counter()
 
     def start(self):
@@ -277,7 +279,7 @@ class AnalysisResult:
         """
         if "txt" not in self.formats:
             return
-        path = Path("python") / f"{self.name}.txt"
+        path = self._out_dir / f"{self.name}.txt"
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"{title}\n")
             f.write("=" * 80 + "\n\n")
@@ -293,7 +295,7 @@ class AnalysisResult:
         """将 DataFrame 写入 csv 文件。"""
         if "csv" not in self.formats:
             return
-        path = Path("python") / f"{self.name}.csv"
+        path = self._out_dir / f"{self.name}.csv"
         _df = df.select(cols) if cols else df
         _df.write_csv(path)
         print(f"  csv → {path}")

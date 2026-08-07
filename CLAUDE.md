@@ -57,7 +57,7 @@ E:\tables\*.parquet  ← 每局一个文件, 列式压缩, ~90 bytes/row
 
 ## Snapshot 表结构 (52列) — 代码内部 / 理想模型
 
-> **注意**：生产数据 `E:\tables\` 中的实际 Parquet 为 44 列精简版，详见上方「生产数据」章节。以下为代码中构建的理想 52 列模型。
+> **注意**：生产数据 `E:\tables\` 中的实际 Parquet 为 45 列精简版，详见上方「生产数据」章节。以下为代码中构建的理想 52 列模型。
 
 | 组 | 列 | 类型 |
 |----|----|------|
@@ -120,11 +120,11 @@ type_id = instance_id / 4
 | 预估总行数 | ~5.1 亿行（每局平均 ~546 行） |
 | 目录结构 | 扁平（无子目录） |
 | 文件命名 | `YYYYMMDDHHgm-00a9-0000-XXXXXXXX.parquet`，前 10 位为日期小时 |
-| 合并文件 | `snapshots_all.parquet` — 13 GB, 4.85 亿行, 3947 个 row group, 44 列同 Schema |
+| 合并文件 | `snapshots_all.parquet` — 14 GB, 4.85 亿行, 45 列 |
 
-### 实际 Parquet Schema (44 列)
+### 实际 Parquet Schema (45 列)
 
-比 CLAUDE.md 中描述的理想 52 列精简，主要差异：无 `hand_after_*` 列，副露/牌河仅用 JSON 列存储，新增和风/分数增量列。
+比 CLAUDE.md 中描述的理想 52 列精简，主要差异：无 `hand_after_*` 列，副露/牌河仅用 JSON 列存储，新增和风/分数增量列，2026-08 新增 `round`（局编号，seed[0]）。
 
 | 组 | 列 | 类型 | 说明 |
 |----|----|------|------|
