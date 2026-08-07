@@ -8,7 +8,7 @@
 """
 
 import polars as pl
-from common import load_snapshots, COL
+from common import load_snapshots, Timer, AnalysisResult, COL
 
 # ── 牌名映射：instance_id → 牌名（赤牌归并到对应 5） ─────────────
 
@@ -33,123 +33,95 @@ def _instance_to_name(instance_id: int) -> str:
     tid = instance_id // 4
     return _TILE_NAMES[tid] if tid < len(_TILE_NAMES) else f"?{instance_id}"
 
-# ── 配置 ─────────────────────────────────────────────────────────
-
-OUT_TXT = "python/deal_in_rate.txt"
-OUT_CSV = "python/deal_in_rate.csv"
-
 
 def main():
-    df = load_snapshots()
+    result = AnalysisResult("deal_in_rate", ["txt", "csv"])
+    result.start()
 
-    # 只取放铳行（荣和），called_tile 即放铳牌
-    ron = df.filter(
-        (pl.col(COL["action_type"]) == "ron") & (pl.col(COL["called_tile"]) >= 0)
-    )
-
-    # ── 按 round + 牌名统计 ───────────────────────
-    stats = (
-        ron.with_columns(
-            pl.col(COL["called_tile"])
-            .map_elements(_instance_to_name, return_dtype=pl.String)
-            .alias("tile")
+    # ── 加载 + 筛选 ─────────────────────────────────
+    with result.time("加载+筛选") as t:
+        df = load_snapshots()
+        ron = df.filter(
+            (pl.col(COL["action_type"]) == "ron")
+            & (pl.col(COL["called_tile"]) >= 0)
         )
-        .group_by([COL["round"], "tile"])
-        .agg(pl.len().alias("deal_in_count"))
-        .sort([COL["round"], "tile"])
-    )
 
-    # ── 每 round 的放铳总数 ───────────────────────
-    round_totals = (
-        ron.group_by(COL["round"])
-        .agg(pl.len().alias("round_total"))
-        .sort(COL["round"])
-    )
-
-    # ── 合并计算比率 ──────────────────────────────
-    result = (
-        stats.join(round_totals, on=COL["round"])
-        .with_columns(
-            (pl.col("deal_in_count") * 100.0 / pl.col("round_total")).alias("rate_pct")
+    # ── 聚合 ────────────────────────────────────────
+    with result.time("聚合+收集") as t:
+        stats = (
+            ron.with_columns(
+                pl.col(COL["called_tile"])
+                .map_elements(_instance_to_name, return_dtype=pl.String)
+                .alias("tile")
+            )
+            .group_by([COL["round"], "tile"])
+            .agg(pl.len().alias("deal_in_count"))
         )
-        .sort([COL["round"], "rate_pct"], descending=[False, True])
-        .collect()
-    )
 
-    # ═════════════════════════════════════════════════════════════
-    # 输出 1: 控制台摘要 — 每 round 最危险的 5 张牌
-    # ═════════════════════════════════════════════════════════════
-    rounds = sorted(result[COL["round"]].unique().to_list())
+        round_totals = (
+            ron.group_by(COL["round"])
+            .agg(pl.len().alias("round_total"))
+        )
 
-    print("=" * 70)
-    print("各 round 放铳率 Top-5 牌（放铳率 = 该牌放铳数 / 该 round 总放铳数）")
+        full = (
+            stats.join(round_totals, on=COL["round"])
+            .with_columns(
+                (pl.col("deal_in_count") * 100.0 / pl.col("round_total"))
+                .alias("rate_pct")
+            )
+            .sort([COL["round"], "rate_pct"], descending=[False, True])
+            .collect()
+        )
+
+        total_ron = round_totals.select(pl.col("round_total").sum()).collect().item()
+
+    # ── 控制台摘要 ──────────────────────────────────
+    rounds = sorted(full[COL["round"]].unique().to_list())
+    print("\n各 round 放铳率 Top-5 牌")
     print("=" * 70)
 
     for rnd in rounds:
-        rd = result.filter(pl.col(COL["round"]) == rnd)
-        total = rd["round_total"].item(0)
-        bakaze = ["東", "南", "西", "北"][rnd // 4] if rnd // 4 < 4 else "?"
-        print(f"\n── {bakaze}{rnd % 4 + 1}局 (round={rnd})  — 总放铳 {total:,} 次 ──")
+        rd = full.filter(pl.col(COL["round"]) == rnd)
+        total_r = rd["round_total"].item(0)
+        bakaze = ["東","南","西","北"][rnd // 4] if rnd // 4 < 4 else "?"
+        print(f"\n── {bakaze}{rnd % 4 + 1}局 (round={rnd})  — 总放铳 {total_r:,} 次 ──")
         for row in rd.head(5).iter_rows():
-            _, tile_name_str, cnt, total_r, rate = row
+            _, tile_name_str, cnt, _, rate = row
             bar = "█" * max(1, int(rate * 5))
             print(f"  {tile_name_str:>4s}  {rate:5.2f}%  {bar}  ({cnt:>8,} 次)")
 
-    print()
+    # ── 输出文件 ────────────────────────────────────
+    result.write_txt(
+        "各 round 放铳率（按牌种）\n"
+        "放铳率 = 该牌放铳次数 / 该 round 总放铳次数 × 100%",
+        full.select([COL["round"], "tile", "deal_in_count", "round_total", "rate_pct"])
+    )
+    result.write_csv(full.select(
+        [COL["round"], "tile", "deal_in_count", "round_total",
+         pl.col("rate_pct").alias("rate_%")]
+    ))
 
-    # ═════════════════════════════════════════════════════════════
-    # 输出 2: 文本表格 deal_in_rate.txt
-    # ═════════════════════════════════════════════════════════════
-    with open(OUT_TXT, "w", encoding="utf-8") as f:
-        f.write("各 round 放铳率（按牌种）\n")
-        f.write("放铳率 = 该牌放铳次数 / 该 round 总放铳次数 × 100%\n")
-        f.write("=" * 80 + "\n\n")
-
-        for rnd in rounds:
-            rd = result.filter(pl.col(COL["round"]) == rnd)
-            total = rd["round_total"].item(0)
-            bakaze = ["東", "南", "西", "北"][rnd // 4] if rnd // 4 < 4 else "?"
-            f.write(f"── {bakaze}{rnd % 4 + 1}局 (round={rnd})  — 总放铳 {total:,} 次 ──\n")
-            f.write(f"{'牌':>4s}  {'放铳率':>7s}  {'次数':>8s}\n")
-            f.write("-" * 30 + "\n")
-            for row in rd.iter_rows():
-                _, tile_name_str, cnt, total_r, rate = row
-                f.write(f"{tile_name_str:>4s}  {rate:6.2f}%  {cnt:>8,}\n")
-            f.write("\n")
-
-    print(f"文本表格已写入 → {OUT_TXT}")
-
-    # ═════════════════════════════════════════════════════════════
-    # 输出 3: CSV（便于 Excel / Python 再分析）
-    # ═════════════════════════════════════════════════════════════
-    csv_df = result.select([
-        COL["round"], "tile", "deal_in_count", "round_total", "rate_pct"
-    ])
-    csv_df = csv_df.rename({"rate_pct": "rate_%"})
-    csv_df.write_csv(OUT_CSV)
-    print(f"CSV 已写入 → {OUT_CSV}")
-
-    # ── 全局最危险的牌（全 round 加权平均） ──
+    # ── 全局 Top-10 ─────────────────────────────────
     print("\n" + "=" * 70)
     print("全 round 加权平均放铳率 Top-10")
     print("=" * 70)
+    global_all = full["deal_in_count"].sum()
     global_stats = (
-        result.group_by("tile")
-        .agg(
-            pl.col("deal_in_count").sum(),
-            pl.col("round_total").first(),  # dummy, not used
-        )
-        .with_columns(
-            (
-                pl.col("deal_in_count") * 100.0 / pl.col("deal_in_count").sum()
-            ).alias("rate_pct")
-        )
+        full.group_by("tile")
+        .agg(pl.col("deal_in_count").sum())
+        .with_columns((pl.col("deal_in_count") * 100.0 / global_all).alias("rate_pct"))
         .sort("rate_pct", descending=True)
     )
     for row in global_stats.head(10).iter_rows():
-        tile_name_str, cnt, _, rate = row
+        nm, cnt, rate = row
         bar = "█" * max(1, int(rate * 10))
-        print(f"  {tile_name_str:>4s}  {rate:5.2f}%  {bar}  ({cnt:>8,} 次)")
+        print(f"  {nm:>4s}  {rate:5.2f}%  {bar}  ({cnt:>8,} 次)")
+
+    result.finish({
+        "ron_events": total_ron,
+        "result_rows": full.height,
+        "unique_tiles": full["tile"].n_unique(),
+    })
 
 
 if __name__ == "__main__":

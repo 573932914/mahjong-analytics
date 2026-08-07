@@ -1,8 +1,14 @@
-"""公共工具：数据加载、牌名映射、常量字段。
+"""公共工具：数据加载、牌名映射、常量字段、计时/输出。
 
 用法：
-    from common import load_snapshots, tile_name, BAKAZE_NAMES
+    from common import load_snapshots, Timer, AnalysisResult, BAKAZE_NAMES
 """
+
+import time
+import sys
+import os
+from pathlib import Path
+from functools import wraps
 
 import polars as pl
 
@@ -173,3 +179,140 @@ def river_col(p: int) -> str:
 def meld_col(p: int) -> str:
     """玩家 p (0-3) 的副露列名。"""
     return f"melds_p{p}_json"
+
+
+# ── 计时与结果输出 ─────────────────────────────────────────────────
+
+class Timer:
+    """上下文管理器 / 手动计时器。
+
+    >>> with Timer("数据加载") as t:
+    ...     df = load_snapshots()
+    ...     df = df.collect()
+    >>> print(t.elapsed)   # 1.23
+
+    >>> t = Timer("聚合")
+    >>> t.start()
+    >>> # ... work ...
+    >>> t.stop()
+    """
+
+    def __init__(self, label: str = ""):
+        self.label = label
+        self._start = 0.0
+        self._elapsed = 0.0
+
+    def start(self):
+        self._start = time.perf_counter()
+        return self
+
+    def stop(self) -> float:
+        self._elapsed = time.perf_counter() - self._start
+        return self._elapsed
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
+
+    @property
+    def elapsed(self) -> float:
+        return self._elapsed
+
+    def __repr__(self) -> str:
+        return f"[{self.label}] {self._elapsed:.1f}s" if self.label else f"{self._elapsed:.1f}s"
+
+
+class AnalysisResult:
+    """分析结果封装：自动计时 + 写 txt/csv + 打印摘要。
+
+    用法:
+        result = AnalysisResult("deal_in_rate", ["txt", "csv"])
+        result.start()
+        df_result = ...  # 你的分析逻辑
+        result.write_txt("标题", df_result, cols=["round","tile","rate_pct"])
+        result.write_csv(df_result)
+        result.finish({"ron_events": 4971312})
+
+    输出:
+        python/deal_in_rate.txt
+        python/deal_in_rate.csv
+        控制台: 步骤耗时 + 行数 + 关键指标
+    """
+
+    def __init__(self, name: str, formats: list[str] | None = None):
+        self.name = name
+        self.formats = formats or ["txt", "csv"]
+        self.timers: dict[str, Timer] = {}
+        self.metrics: dict[str, int | float | str] = {}
+        self._script_dir = Path(sys.argv[0]).parent if "__file__" not in dir(sys.modules["__main__"]) else Path("python")
+        self._start = time.perf_counter()
+
+    def start(self):
+        """标记分析开始。"""
+        self._start = time.perf_counter()
+        return self
+
+    def time(self, label: str) -> Timer:
+        """创建命名计时器。调用方用 `with t:` 或手动 `t.start()/t.stop()`。
+
+        >>> with result.time("分组") as t:
+        ...     df = df.group_by("x").agg(...)
+        """
+        t = Timer(label)
+        self.timers[label] = t
+        return t
+
+    def write_txt(self, title: str, df: "pl.DataFrame",
+                  cols: list[str] | None = None, fmt: str = "table"):
+        """将 DataFrame 写入 txt 文件。
+
+        Args:
+            title: 文件头标题
+            df: 要写入的 DataFrame
+            cols: 要输出的列，None=全部
+            fmt: "table"=对齐文本, "lines"=每行一条
+        """
+        if "txt" not in self.formats:
+            return
+        path = Path("python") / f"{self.name}.txt"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{title}\n")
+            f.write("=" * 80 + "\n\n")
+            _df = df.select(cols) if cols else df
+            if fmt == "table":
+                f.write(str(_df) + "\n")
+            else:
+                for row in _df.iter_rows():
+                    f.write("  ".join(str(v) for v in row) + "\n")
+        print(f"  txt → {path}")
+
+    def write_csv(self, df: "pl.DataFrame", cols: list[str] | None = None):
+        """将 DataFrame 写入 csv 文件。"""
+        if "csv" not in self.formats:
+            return
+        path = Path("python") / f"{self.name}.csv"
+        _df = df.select(cols) if cols else df
+        _df.write_csv(path)
+        print(f"  csv → {path}")
+
+    def finish(self, metrics: dict | None = None):
+        """结束分析，打印汇总。"""
+        total = time.perf_counter() - self._start
+        if metrics:
+            self.metrics.update(metrics)
+
+        print(f"\n{'─' * 50}")
+        print(f"  {self.name}  完成  总耗时 {total:.1f}s")
+        for label, t in self.timers.items():
+            print(f"    {label}:  {t.elapsed:.1f}s")
+        for k, v in self.metrics.items():
+            if isinstance(v, float):
+                print(f"    {k}:  {v:,.1f}")
+            elif isinstance(v, int):
+                print(f"    {k}:  {v:,}")
+            else:
+                print(f"    {k}:  {v}")
+        print(f"{'─' * 50}")
